@@ -92,6 +92,21 @@ private:
   IOTimerEventSource* _buttonTimer;
   uint64_t _maxmiddleclicktime;
   int _fakemiddlebutton;
+
+  // for TrackPoint middle-button scrolling
+  enum tpscrollstate
+  {
+      TP_SCROLL_NOT_PRESSED,
+      TP_SCROLL_PRESSED,
+      TP_SCROLL_SCROLLED,
+  } _tpscrollstate;
+
+  int _trackpointscroll;
+  int _trackpointscrolldivisor;
+  int _trackpointscrollthreshold;
+  int _trackpointscrollinverter;
+  int _tpscrollaccumx;
+  int _tpscrollaccumy;
     
   void onButtonTimer(void);
   enum MBComingFrom { fromTimer, fromMouse };

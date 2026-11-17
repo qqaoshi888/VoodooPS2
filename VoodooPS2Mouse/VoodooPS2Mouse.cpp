@@ -87,6 +87,15 @@ bool ApplePS2Mouse::init(OSDictionary * dict)
   _buttontime = 0;
   _maxmiddleclicktime = 100000000;
 
+  // state for TrackPoint middle-button scrolling
+  _tpscrollstate = TP_SCROLL_NOT_PRESSED;
+  _trackpointscroll = 1;
+  _trackpointscrolldivisor = 8;
+  _trackpointscrollthreshold = 2;
+  _trackpointscrollinverter = 1;
+  _tpscrollaccumx = 0;
+  _tpscrollaccumy = 0;
+
   // announce version
   extern kmod_info_t kmod_info;
   DEBUG_LOG("VoodooPS2Mouse: Version %s starting on OS X Darwin %d.%d.\n", kmod_info.version, version_major, version_minor);
@@ -108,6 +117,10 @@ void ApplePS2Mouse::setParamPropertiesGated(OSDictionary * config)
         {"ScrollYInverter",                 &scrollyinverter},
         {"WakeDelay",                       &wakedelay},
         {"ButtonCount",                     &_buttonCount},
+        {"TrackpointScroll",                &_trackpointscroll},
+        {"TrackpointScrollDivisor",         &_trackpointscrolldivisor},
+        {"TrackpointScrollThreshold",       &_trackpointscrollthreshold},
+        {"TrackpointScrollInverter",        &_trackpointscrollinverter},
     };
     const struct {const char *name; int *var;} boolvars[]={
         {"ForceDefaultResolution",          &forceres},
@@ -793,10 +806,96 @@ void ApplePS2Mouse::dispatchRelativePointerEventWithPacket(UInt8 * packet,
   }
 
   buttons = middleButton(buttons, now_abs, fromMouse);
+
+  if (_trackpointscroll && _buttonCount >= 3)
+  {
+    const UInt32 middleMask = 0x4;
+    bool middleDown = (buttons & middleMask) != 0;
+
+    switch (_tpscrollstate)
+    {
+      case TP_SCROLL_NOT_PRESSED:
+        if (middleDown)
+        {
+          _tpscrollstate = TP_SCROLL_PRESSED;
+          _tpscrollaccumx = 0;
+          _tpscrollaccumy = 0;
+        }
+        break;
+
+      case TP_SCROLL_PRESSED:
+        _tpscrollaccumx += dx;
+        _tpscrollaccumy += dy;
+
+        {
+          int threshold = _trackpointscrollthreshold > 0 ? _trackpointscrollthreshold : 1;
+          int accumAbs = _tpscrollaccumx < 0 ? -_tpscrollaccumx : _tpscrollaccumx;
+          accumAbs += _tpscrollaccumy < 0 ? -_tpscrollaccumy : _tpscrollaccumy;
+          if (accumAbs >= threshold)
+            _tpscrollstate = TP_SCROLL_SCROLLED;
+        }
+
+        if (!middleDown && _tpscrollstate == TP_SCROLL_PRESSED)
+        {
+          // Middle click without movement: send the press now,
+          // the normal release report below completes the click.
+          dispatchRelativePointerEventX(0, 0, middleMask, now_abs);
+          _tpscrollstate = TP_SCROLL_NOT_PRESSED;
+        }
+        break;
+
+      case TP_SCROLL_SCROLLED:
+        if (middleDown)
+        {
+          _tpscrollaccumx += dx;
+          _tpscrollaccumy += dy;
+        }
+        else
+        {
+          _tpscrollstate = TP_SCROLL_NOT_PRESSED;
+          _tpscrollaccumx = 0;
+          _tpscrollaccumy = 0;
+          // Do not let the release packet move the pointer.
+          dx = 0;
+          dy = 0;
+        }
+        break;
+    }
+
+    if (_tpscrollstate == TP_SCROLL_SCROLLED)
+    {
+      int divisor = _trackpointscrolldivisor > 0 ? _trackpointscrolldivisor : 1;
+      int scrollY = _tpscrollaccumy / divisor;
+      int scrollX = _tpscrollaccumx / divisor;
+      _tpscrollaccumy -= scrollY * divisor;
+      _tpscrollaccumx -= scrollX * divisor;
+
+      if (scrollY || scrollX)
+      {
+        // dy is negative when moving up, while scroll wheel deltas are
+        // positive for an upward scroll, so invert the vertical axis.
+        dispatchScrollWheelEventX(
+          (short)(-_trackpointscrollinverter * scrollY),
+          (short)(_trackpointscrollinverter * scrollX),
+          0, now_abs);
+      }
+
+      lastbuttons = buttons & ~middleMask;
+      return;
+    }
+
+    if (_tpscrollstate == TP_SCROLL_PRESSED)
+    {
+      // Do not report the middle button until we know whether this is
+      // a click or a scroll.
+      buttons &= ~middleMask;
+    }
+  }
+
   lastbuttons = buttons;
-    
+
   dispatchRelativePointerEventX(dx, mouseyinverter*dy, buttons, now_abs);
-    
+
   if (dz)
   {
     //
